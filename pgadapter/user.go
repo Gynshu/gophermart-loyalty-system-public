@@ -8,6 +8,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/rs/zerolog/log"
+	"strings"
 )
 
 const (
@@ -56,8 +57,11 @@ func (u *userAdapter) CreateUser(ctx context.Context, user *models.User) error {
 	}
 	_, err = u.conn.ExecContext(ctx, createUser, user.ID, user.Login, hashedPassword)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+			return models.ErrorUserAlreadyExists
+		}
 		tx.Rollback()
-		return models.ErrorUserAlreadyExists
+		return err
 	}
 
 	_, err = tx.ExecContext(ctx, createBalance, uuid.New().String(), user.ID, 0, 0)

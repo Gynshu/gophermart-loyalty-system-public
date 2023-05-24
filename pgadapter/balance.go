@@ -17,7 +17,7 @@ const (
     );`
 	selectAmount    = `SELECT amount FROM balances WHERE user_id = $1`
 	updateBalance   = `UPDATE balances SET amount = amount + $1 WHERE user_id = $2`
-	updateWithdrawn = `UPDATE balances SET withdrawn = withdrawn + $1, amount = amount - $1 WHERE user_id = $2;`
+	updateWithdrawn = `UPDATE balances SET withdrawn = withdrawn + $1, amount = amount - $1 WHERE user_id = $2 AND amount >= $1;`
 	readBalance     = `SELECT id, user_id, amount, withdrawn FROM balances WHERE user_id = $1;`
 )
 
@@ -49,45 +49,33 @@ func (b *balanceAdapter) ReadBalance(ctx context.Context, userID string) (*model
 	return balance[0], err
 }
 func (b *balanceAdapter) IncrementBalance(ctx context.Context, userID string, amount float64) error {
+	_, err := b.conn.ExecContext(ctx, updateBalance, amount, userID)
+	return err
+}
+
+// IncrementWithdrawn Increments Withdrawal and Decrements balance (if possible)
+func (b *balanceAdapter) IncrementWithdrawn(ctx context.Context, userID string, amount float64) error {
 	tx, err := b.conn.BeginTxx(ctx, nil)
 	if err != nil {
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, updateBalance, amount, userID)
+	// Update withdrawn only if amount is available
+	result, err := tx.ExecContext(ctx, updateWithdrawn, amount, userID)
 	if err != nil {
-		tx.Rollback()
+		_ = tx.Rollback()
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
 		return err
 	}
 
-	return tx.Commit()
-}
-
-// IncrementWithdrawn Increments Withdrawal and Decrements balance (if possible)
-func (b *balanceAdapter) IncrementWithdrawn(ctx context.Context, userID string, amount float64) error {
-	tx, err := b.conn.BeginTxx(ctx, nil) // start a new transaction
-	if err != nil {
-		return err
-	}
-
-	var balance float64
-	err = tx.GetContext(ctx, &balance, selectAmount, userID)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	if balance-amount < 0 {
-		tx.Rollback()
+	if rows == 0 {
+		_ = tx.Rollback()
 		return models.ErrorInsufficientFunds
 	}
-
-	_, err = tx.ExecContext(ctx, updateWithdrawn, amount, userID)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
 	return tx.Commit()
 }
 func (b *balanceAdapter) createBalanceSchema(ctx context.Context) error {
